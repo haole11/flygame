@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>霓虹太空 - 修复版</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #111;
+            font-family: &apos;Arial&apos;, sans-serif;
+            touch-action: manipulation; /* 优化移动端点击 */
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background: radial-gradient(circle, #1a2a4a, #000);
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            z-index: 10;
+            pointer-events: none; /* 默认不拦截事件，让点击穿透到Canvas */
+        }
+        #score {
+            color: #0ff;
+            font-size: 24px;
+            text-shadow: 0 0 10px #0ff;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        #startBtn {
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            border-radius: 50px;
+            cursor: pointer;
+            outline: none;
+            transition: transform 0.2s;
+            pointer-events: auto; /* 按钮本身需要响应点击 */
+            box-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
+        }
+        #startBtn:active { transform: scale(0.95); }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 48px;
+            font-weight: bold;
+            text-align: center;
+            display: none;
+            text-shadow: 0 0 20px red;
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="score">得分: 0</div>
+        <button id="startBtn"> 开始游戏</button>
+        <div id="gameOver">
+            <div>游戏结束</div>
+            <div style="font-size: 24px; margin: 20px 0;">最终得分: <span id="finalScore">0</span></div>
+            <button onclick="location.reload()" style="padding: 10px 30px; font-size: 16px;">重玩</button>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById(&apos;gameCanvas&apos;);
+        const ctx = canvas.getContext(&apos;2d&apos;);
+        const startBtn = document.getElementById(&apos;startBtn&apos;);
+        const scoreDisplay = document.getElementById(&apos;score&apos;);
+        const gameOverPanel = document.getElementById(&apos;gameOver&apos;);
+        const finalScoreDisplay = document.getElementById(&apos;finalScore&apos;);
+
+        // 设置画布大小
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener(&apos;resize&apos;, resizeCanvas);
+
+        // 游戏状态
+        let gameStarted = false;
+        let gameOver = false;
+        let score = 0;
+
+        // 玩家
+        const player = {
+            x: 0,
+            y: 0,
+            radius: 20,
+            color: &apos;#00ffff&apos;,
+            speed: 5,
+            isAlive: true
+        };
+
+        // 子弹
+        const bullets = [];
+        const bulletSpeed = 7;
+
+        // 敌人
+        const enemies = [];
+        const enemySpeed = 2;
+        let enemySpawnTimer = 0;
+
+        // 星星背景
+        const stars = [];
+        for (let i = 0; i < 100; i++) {
+            stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                radius: Math.random() * 2 + 1,
+                speed: Math.random() * 0.5 + 0.1
+            });
+        }
+
+        // 输入控制
+        const keys = {};
+        window.addEventListener(&apos;keydown&apos;, e => keys[e.key] = true);
+        window.addEventListener(&apos;keyup&apos;, e => keys[e.key] = false);
+
+        // 鼠标/触摸控制
+        let mouseX = 0;
+        let mouseY = 0;
+        let isShooting = false;
+
+        canvas.addEventListener(&apos;mousedown&apos;, () => isShooting = true);
+        canvas.addEventListener(&apos;mouseup&apos;, () => isShooting = false);
+        canvas.addEventListener(&apos;mousemove&apos;, e => {
+            if (gameStarted) {
+                const rect = canvas.getBoundingClientRect();
+                mouseX = e.clientX - rect.left;
+                mouseY = e.clientY - rect.top;
+            }
+        });
+
+        // 移动端触摸
+        canvas.addEventListener(&apos;touchstart&apos;, (e) => {
+            e.preventDefault();
+            isShooting = true;
+            updateTouchPos(e);
+        });
+
+        canvas.addEventListener(&apos;touchmove&apos;, (e) => {
+            e.preventDefault();
+            updateTouchPos(e);
+        });
+
+        canvas.addEventListener(&apos;touchend&apos;, () => isShooting = false);
+
+        function updateTouchPos(e) {
+            const touch = e.touches[0] || e.changedTouches[0];
+            const rect = canvas.getBoundingClientRect();
+            mouseX = touch.clientX - rect.left;
+            mouseY = touch.clientY - rect.top;
+        }
+
+        // 修复核心：确保点击按钮后正确初始化
+        startBtn.addEventListener(&apos;click&apos;, () => {
+            if (!gameStarted) {
+                startGame();
+            }
+        });
+
+        function startGame() {
+            gameStarted = true;
+            gameOver = false;
+            score = 0;
+            bullets.length = 0;
+            enemies.length = 0;
+            player.x = canvas.width / 2;
+            player.y = canvas.height - 100;
+
+            // 隐藏按钮
+            startBtn.style.display = &apos;none&apos;;
+            scoreDisplay.style.display = &apos;block&apos;;
+        }
+
+        // 主循环
+        function gameLoop() {
+            if (gameOver) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (gameStarted) {
+                update();
+                draw();
+            } else {
+                drawStartScreen();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function update() {
+            // 更新星星
+            stars.forEach(star => {
+                star.y += star.speed;
+                if (star.y > canvas.height) star.y = 0;
+            });
+
+            // 玩家移动
+            if (keys[&apos;ArrowLeft&apos;] || keys[&apos;a&apos;]) player.x -= player.speed;
+            if (keys[&apos;ArrowRight&apos;] || keys[&apos;d&apos;]) player.x += player.speed;
+            if (keys[&apos;ArrowUp&apos;] || keys[&apos;w&apos;]) player.y -= player.speed;
+            if (keys[&apos;ArrowDown&apos;] || keys[&apos;s&apos;]) player.y += player.speed;
+
+            // 移动端跟随鼠标
+            if (mouseX && mouseY) {
+                player.x = lerp(player.x, mouseX, 0.1);
+                player.y = lerp(player.y, mouseY, 0.1);
+            }
+
+            // 边界检测
+            player.x = Math.max(player.radius, Math.min(canvas.width - player.radius, player.x));
+            player.y = Math.max(player.radius, Math.min(canvas.height - player.radius, player.y));
+
+            // 射击
+            if ((keys[&apos; &apos;] || isShooting) && bullets.length < 10) {
+                bullets.push({
+                    x: player.x,
+                    y: player.y - player.radius,
+                    radius: 4
+                });
+            }
+
+            // 更新子弹
+            bullets.forEach((bullet, i) => {
+                bullet.y -= bulletSpeed;
+                if (bullet.y < 0) bullets.splice(i, 1);
+            });
+
+            // 生成敌人
+            enemySpawnTimer++;
+            if (enemySpawnTimer % 60 === 0) {
+                enemies.push({
+                    x: Math.random() * (canvas.width - 40) + 20,
+                    y: -20,
+                    radius: 20,
+                    color: `hsl(${Math.random() * 360}, 100%, 50%)`
+                });
+            }
+
+            // 更新敌人
+            enemies.forEach((enemy, i) => {
+                enemy.y += enemySpeed + (score / 1000);
+                if (enemy.y > canvas.height) enemies.splice(i, 1);
+            });
+
+            // 碰撞检测
+            bullets.forEach((bullet, bIdx) => {
+                enemies.forEach((enemy, eIdx) => {
+                    const dx = bullet.x - enemy.x;
+                    const dy = bullet.y - enemy.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < bullet.radius + enemy.radius) {
+                        // 爆炸效果
+                        createExplosion(enemy.x, enemy.y, enemy.color);
+                        bullets.splice(bIdx, 1);
+                        enemies.splice(eIdx, 1);
+                        score += 100;
+                        scoreDisplay.innerText = `得分: ${score}`;
+                    }
+                });
+            });
+
+            // 玩家碰撞检测
+            enemies.forEach(enemy => {
+                const dx = player.x - enemy.x;
+                const dy = player.y - enemy.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < player.radius + enemy.radius) {
+                    gameOver = true;
+                    finalScoreDisplay.innerText = score;
+                    gameOverPanel.style.display = &apos;block&apos;;
+                }
+            });
+        }
+
+        function lerp(a, b, t) {
+            return a + (b - a) * t;
+        }
+
+        function draw() {
+            // 绘制星星
+            ctx.fillStyle = &apos;white&apos;;
+            stars.forEach(star => {
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // 绘制子弹
+            ctx.fillStyle = &apos;#fff&apos;;
+            bullets.forEach(bullet => {
+                ctx.beginPath();
+                ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // 绘制敌人
+            enemies.forEach(enemy => {
+                ctx.save();
+                ctx.translate(enemy.x, enemy.y);
+                ctx.rotate((score * 0.001) % (Math.PI * 2)); // 旋转动画
+                ctx.beginPath();
+                ctx.arc(0, 0, enemy.radius, 0, Math.PI * 2);
+                ctx.fillStyle = enemy.color;
+                ctx.fill();
+                ctx.strokeStyle = &apos;#fff&apos;;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.restore();
+            });
+
+            // 绘制玩家
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            ctx.rotate((Date.now() * 0.001) % (Math.PI * 2)); // 霓虹闪烁
+            ctx.beginPath();
+            ctx.moveTo(0, -player.radius);
+            ctx.lineTo(-player.radius * 0.7, player.radius);
+            ctx.lineTo(player.radius * 0.7, player.radius);
+            ctx.closePath();
+            ctx.fillStyle = player.color;
+            ctx.fill();
+            ctx.strokeStyle = &apos;#fff&apos;;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawStartScreen() {
+            // 背景动画
+            ctx.save();
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = &apos;rgba(0, 255, 255, 0.1)&apos;;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // 标题
+            ctx.textAlign = &apos;center&apos;;
+            ctx.font = &apos;60px Arial&apos;;
+            ctx.fillStyle = &apos;#00ffff&apos;;
+            ctx.strokeStyle = &apos;#fff&apos;;
+            ctx.lineWidth = 2;
+            ctx.fillText(&apos;霓虹太空&apos;, canvas.width / 2, canvas.height / 2 - 100);
+            ctx.strokeText(&apos;霓虹太空&apos;, canvas.width / 2, canvas.height / 2 - 100);
+
+            // 操作说明
+            ctx.font = &apos;24px Arial&apos;;
+            ctx.fillStyle = &apos;#fff&apos;;
+            ctx.fillText(&apos;电脑: WASD / 方向键移动, 空格射击&apos;, canvas.width / 2, canvas.height / 2 - 30);
+            ctx.fillText(&apos;手机: 触摸屏幕移动并自动射击&apos;, canvas.width / 2, canvas.height / 2 + 10);
+
+            // 让按钮看起来像在Canvas上（实际上在HTML层，但位置居中）
+            // 这里通过CSS控制，代码里不需要画按钮
+        }
+
+        // 启动
+        gameLoop();
+    </script>
+</body>
+</html>
